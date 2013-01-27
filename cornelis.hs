@@ -1,12 +1,14 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell, DeriveFunctor #-}
 
 module Main where
 
 import Control.Applicative
 import Control.Lens
-import Control.Monad (when, guard)
+import Control.Monad (when)
+import Control.Monad.Free
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Either
+import Control.Monad.Trans.RWST
 import Codec.Picture
 
 import qualified Data.Map as M
@@ -29,7 +31,7 @@ data CodelChooser = CLeft | CRight
 data Colour = Light Hue | Normal Hue | Dark Hue | Black | White
   deriving (Show, Eq)
 data Hue = Red | Yellow | Green | Cyan | Blue | Magenta
-  deriving (Show, Eq)
+  deriving (Show, Eq, Enum)
 data ColourMap = ColourMap {
   _matrix :: V.Vector (V.Vector Colour),
   _mapWidth :: Int,
@@ -37,6 +39,7 @@ data ColourMap = ColourMap {
   } deriving (Show, Eq)
 type CodelSize = Int
 type Position = (Int, Int) -- (X, Y)
+type Block = [Position]
 
 data ProgramState = ProgramState {
   _directionPointer :: DirectionPointer,
@@ -49,6 +52,29 @@ data ProgramConfig = ProgramConfig {
   } deriving (Show, Eq)
 
 data Error = Parse String | LoadFile String | FindFile String
+
+data Instruction r = Push Int r
+                   | Pop r  
+                   | Add r  
+                   | Subtract r
+                   | Multiply r  
+                   | Divide r 
+                   | Mod r
+                   | Not r
+                   | Greater r  
+                   | Pointer r  
+                   | Switch (Int -> r)
+                   | Duplicate r  
+                   | Roll r  
+                   | InNum r  
+                   | InChar r  
+                   | OutNum r  
+                   | OutChar r 
+                    deriving Functor
+
+type Program = Free Instruction ()
+
+newtype Cornelis w m a = Cornelis { runCornelis :: RWST ProgramConfig w ProgramState m a }
 
 instance Show Error where
   show (Parse m) = "Error while parsing: " ++ m
@@ -79,7 +105,7 @@ onMap m (i, j) =
 (&!) :: ColourMap -> Position -> Maybe Colour
 m &! c@(i, j) =
   if onMap m c
-    then Just $ _matrix m ! i ! j
+    then Just $ _matrix m ! j ! i
     else Nothing
   
 pixelToColour :: PixelRGB8 -> Colour
@@ -122,7 +148,7 @@ imageToColourMap img cs = ColourMap matrix w' (V.length matrix)
                       else V.cons head (to2D tail)
 
 -- Finds all the codels which are in the same colour block as c.
-discoverBlock :: ColourMap -> Position -> [Position]
+discoverBlock :: ColourMap -> Position -> Block
 discoverBlock m c =
   let discover visited c'@(x, y) =
         if onMap m c'
@@ -136,6 +162,22 @@ discoverBlock m c =
               right = (succ x, y)
               colour = m &! c'
   in L.nub $ discover S.empty c
+                                       
+-- How many steps do we need to take from a to b? 'hueSteps a b' is the answer.
+hueSteps a b = (fromEnum b - fromEnum a + 6) `mod` 6
+
+lightnessSteps :: Colour -> Colour -> Maybe Int
+lightnessSteps a b = case (a, b) of
+  (Light _, Light _) -> Just 0
+  (Normal _, Normal _) -> Just 0
+  (Dark _, Dark _) -> Just 0
+  (Light _, Normal _) -> Just 1
+  (Normal _, Dark _) -> Just 1
+  (Dark _, Light _) -> Just 1
+  (Light _, Dark _) -> Just 2
+  (Normal _, Light _) -> Just 2
+  (Dark _, Normal _) -> Just 2
+  (_, _) -> Nothing
 
 main = do
   args <- getArgs
