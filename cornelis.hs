@@ -1,11 +1,20 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 module Main where
 
-import Control.Arrow
+import Control.Applicative
+import Control.Lens
 import Control.Monad (when, guard)
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Either
 import Codec.Picture
 
 import qualified Data.Map as M
 import Data.Maybe
+import qualified Data.List as L
+import qualified Data.Set as S
+import Debug.Trace
+import Data.Vector ((!))
 import qualified Data.Vector as V
 
 import System.Console.GetOpt
@@ -21,7 +30,11 @@ data Colour = Light Hue | Normal Hue | Dark Hue | Black | White
   deriving (Show, Eq)
 data Hue = Red | Yellow | Green | Cyan | Blue | Magenta
   deriving (Show, Eq)
-type ColourMap = V.Vector (V.Vector Colour)
+data ColourMap = ColourMap {
+  _matrix :: V.Vector (V.Vector Colour),
+  _mapWidth :: Int,
+  _mapHeight :: Int
+  } deriving (Show, Eq)
 type CodelSize = Int
 type Position = (Int, Int) -- (X, Y)
 
@@ -29,11 +42,22 @@ data ProgramState = ProgramState {
   _directionPointer :: DirectionPointer,
   _codelChooser :: CodelChooser,
   _currentPosition :: Position
-  }
+  } deriving (Show, Eq)
                     
 data ProgramConfig = ProgramConfig {
   _codelSize :: CodelSize
-  }
+  } deriving (Show, Eq)
+
+data Error = Parse String | LoadFile String | FindFile String
+
+instance Show Error where
+  show (Parse m) = "Error while parsing: " ++ m
+  show (LoadFile m) = "Error while loading file: " ++ m
+  show (FindFile m) = "Can't find file: " ++ m
+  
+makeLenses ''ColourMap
+makeLenses ''ProgramState
+makeLenses ''ProgramConfig
 
 readMaybe :: Read a => String -> Maybe a
 readMaybe s = case reads s of
@@ -43,6 +67,21 @@ readMaybe s = case reads s of
 uncurry3 :: (a -> b -> c -> d) -> (a, b, c) -> d
 uncurry3 f ~(a, b, c) = f a b c
 
+throw = left
+io = lift
+
+onMap :: ColourMap -> Position -> Bool
+onMap m (i, j) =
+  let w = _mapWidth m
+      h = _mapHeight m
+  in (0 <= i && i < w) && (0 <= j && j < h)
+     
+(&!) :: ColourMap -> Position -> Maybe Colour
+m &! c@(i, j) =
+  if onMap m c
+    then Just $ _matrix m ! i ! j
+    else Nothing
+  
 pixelToColour :: PixelRGB8 -> Colour
 pixelToColour (PixelRGB8 r g b) = case (r, g, b) of
   (255, 192, 192) -> Light Red
@@ -66,49 +105,84 @@ pixelToColour (PixelRGB8 r g b) = case (r, g, b) of
   (0, 0, 0) -> Black
   _ -> White
    
-imageToColourMap :: Image PixelRGB8 -> CodelSize -> ColourMap -- V.Vector Colour
-imageToColourMap img cs = to2D $ V.fromList $ map (pixelToColour . pixAt) coords
-  where coords =
-          [(x, y) | x <- [0..w], y <- [0..h],
-                    x + y `mod` cs == 0]
+imageToColourMap :: Image PixelRGB8 -> CodelSize -> ColourMap
+imageToColourMap img cs = ColourMap matrix w' (V.length matrix)
+  where matrix = to2D . V.fromList $ map (pixelToColour . pixAt) coords
+        coords = [(x, y) | y <- [0..pred h], x <- [0..pred w], cs |^ x, cs |^ y]
         w = imageWidth img
         h = imageHeight img
+        w' = w `div` cs
+        a |^ b = b `mod` a == 0 -- a divides b
         pixAt = uncurry (pixelAt img)
-        to2D v =
-          let (head, tail) = V.splitAt w v
-          in V.cons head (to2D tail)
+        
+        -- Converts a 1D array to a 2D array in row order.
+        to2D v = let (head, tail) = V.splitAt w' v
+                 in if V.length tail < w'
+                      then V.singleton head
+                      else V.cons head (to2D tail)
 
--- moveToEdge :: State Pos Pos
+-- Finds all the codels which are in the same colour block as c.
+discoverBlock :: ColourMap -> Position -> [Position]
+discoverBlock m c =
+  let discover visited c'@(x, y) =
+        if onMap m c'
+          then c':concatMap (discover (S.insert c' visited)) neighbours
+          else []
+        where neighbours = filter p [up, down, left, right]
+              p = and . sequence [(== colour) . (m &!), onMap m, (`S.notMember` visited)]
+              up = (x, pred y)
+              down = (x, succ y)
+              left = (pred x, y)
+              right = (succ x, y)
+              colour = m &! c'
+  in L.nub $ discover S.empty c
+
 main = do
   args <- getArgs
   case args of
     ["--help"] -> help
-    [fp, "-cs", n] -> something fp n
+    [fp, "-cs", n] -> do
+      v <- runEitherT $ something fp n
+      case v of
+        Left e -> print e >> exitFailure
+        Right a -> undefined
     _ -> repl
     
-  where help = putStrLn $ unlines ["", "Help", "----", "hoi"]
+  where help = putStrLn $ unlines ["", "Help", "----", "..."]
         
         repl = putStrLn "repl"
         
         something fp n = do
-          let n' = readMaybe n :: Maybe Int
-          when (isNothing n') $ do
-            putStrLn $ "Error while parsing " ++ n ++ " as an int."
-            exitFailure
-          e <- doesFileExist fp
-          if (not e)
-             then putStrLn $ "Can't find \"" ++ fp ++ "\"."
-             else do
-               img <- readImage fp
-               case img of
-                 Left e -> putStrLn "kon het bestand niet laden"
-                 Right a -> case a of
-                   ImageRGB8 i -> do
-                     putStrLn "colourMap:"
-                     print $ imageToColourMap i 16
-                   ImageY8 i -> putStrLn "Y8"
-                   ImageYF i -> putStrLn "YF"
-                   ImageYA8 i -> putStrLn "YA8"
-                   ImageRGBA8 i -> putStrLn "RGBA8"
-                   ImageRGBF i -> putStrLn "RGBF"
-                   ImageYCbCr8 i ->putStrLn "YCbCr8"
+          let n' = readMaybe n
+          when (isNothing n') $ throw $ Parse $ n ++ " as an int."
+          let cs = fromJust n'
+          e <- io $ doesFileExist fp
+          when (not e) $ throw $ FindFile fp
+          img <- io $ readImage fp
+          case img of
+            Left e -> throw $ LoadFile fp
+            Right a -> case a of
+              ImageRGB8 i -> do
+                let w = imageWidth i
+                    h = imageHeight i
+                io $ do
+                  putStrLn $ "w: " ++ show w ++ ", h: " ++ show h
+                  print [(x, y) | x <- [0..w], y <- [0..h], x `mod` cs == 0, y `mod` cs == 0]
+                  print $ (\(PixelRGB8 r g b) -> (r,g,b)) $ pixelAt i 0 0
+                  putStrLn "colourMap:"
+                  let m = imageToColourMap i cs
+                  print m
+                  putStrLn $ (if onMap m (0, 0) then "" else "not ") ++ "on map"
+                  print $ discoverBlock m (0, 0)
+              ImageY8 i -> io $ putStrLn "Y8"
+              ImageYF i -> io $ putStrLn "YF"
+              ImageYA8 i -> io $ putStrLn "YA8"
+              ImageRGBA8 i -> io $ putStrLn "RGBA8"
+              ImageRGBF i -> io $ putStrLn "RGBF"
+              ImageYCbCr8 i -> io $ putStrLn "YCbCr8"
+              
+testMap = ColourMap {
+  _matrix = V.fromList [V.fromList [Normal Blue,Normal Blue,Normal Blue,Dark Blue,Dark Blue,Dark Blue,Black,Normal Green,Normal Green,Black],V.fromList [Normal Blue,Normal Blue,Normal Blue,Dark Blue,Dark Blue,Normal Green,Normal Green,Normal Green,Normal Green,Normal Green],V.fromList [Normal Blue,Normal Blue,Normal Blue,Dark Blue,Dark Blue,Dark Blue,Light Blue,Dark Magenta,Dark Cyan,Normal Green],V.fromList [Normal Red,Normal Red,Normal Red,Normal Red,Black,Normal Red,Normal Red,Normal Cyan,Normal Red,Normal Green],V.fromList [Normal Red,Normal Red,Normal Red,Normal Red,Normal Green,Dark Cyan,Normal Cyan,Normal Cyan,Normal Cyan,Normal Green],V.fromList [Normal Red,Normal Red,Normal Red,Normal Red,Normal Green,Normal Red,Normal Red,Normal Cyan,Dark Green,Normal Green],V.fromList [Normal Yellow,Normal Yellow,Black,Black,Normal Green,Black,Black,Normal Cyan,Dark Green,Dark Green],V.fromList [Normal Yellow,Normal Yellow,Black,Normal Green,Normal Green,Normal Green,Black,Normal Cyan,Normal Cyan,Light Green],V.fromList [Black,Black,Black,Black,Black,Black,Black,Black,Normal Cyan,Dark Cyan],V.fromList [Normal Yellow,Normal Yellow,Black,Normal Yellow,Normal Yellow,Normal Yellow,Normal Yellow,Black,Normal Cyan,Dark Blue]],
+  _mapWidth = 10,
+  _mapHeight = 10
+  }
