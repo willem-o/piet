@@ -42,7 +42,7 @@ io = lift
 x = _1
 y = _2
 
-interpret :: Program -> Cornelis ()
+interpret :: Program -> Piet ()
 interpret (Pure _) = return ()
 interpret (Free c) = case c of
   Push n r -> {-io (putStrLn ("push " ++ show n)) >>-} stack %= (n:) >> interpret r
@@ -88,10 +88,10 @@ interpret (Free c) = case c of
         readInt' :: IO (Maybe Int)
         readInt' = readMaybe <$> getLine
         
-        pushInt :: Int -> Cornelis ()
+        pushInt :: Int -> Piet ()
         pushInt = (stack %=) . (:)
         
-        pushChar :: Char -> Cornelis ()
+        pushChar :: Char -> Piet ()
         pushChar = pushInt . ord
         
         printTop f = do
@@ -257,7 +257,7 @@ coloursToProgram c c' n =
 -- in the direction of directionPointer and executes the command.
 -- Halts the interpreter after 8 consecutive collisions.
 -- Transitions again when it collides.
-transition :: Cornelis ()
+transition :: Piet ()
 transition = do
   cc <- use collisionCount
   when (cc == 7) $ io exitSuccess
@@ -280,7 +280,7 @@ transition = do
       -- io $ putStrLn $ "moving from " ++ show c ++ " to " ++ show c'
       interpret instr
       -- io $ void $ sleep 1
-  where doIfCollided :: Int -> ColourMap -> Position -> Block -> Cornelis ()
+  where doIfCollided :: Int -> ColourMap -> Position -> Block -> Piet ()
         doIfCollided cc m cp block = do
           if even cc
             then toggleChooser
@@ -294,10 +294,10 @@ transition = do
 
 -- Returns the colour at pos on colourMap wrapped in a Just.
 -- When pos isn't within the bounds of the map, colourAt returns Nothing.
-colourAt :: Position -> Cornelis (Maybe Colour)
+colourAt :: Position -> Piet (Maybe Colour)
 colourAt pos = (&! pos) <$> asks colourMap
 
-toggleChooser :: Cornelis ()
+toggleChooser :: Piet ()
 toggleChooser = do
   cc <- use codelChooser
   codelChooser .= if cc == CLeft
@@ -305,7 +305,7 @@ toggleChooser = do
                     else CLeft
 
 -- Rotates directionPointer clockwise.
-rotatePointer :: Cornelis ()
+rotatePointer :: Piet ()
 rotatePointer = do
   dp <- use directionPointer
   directionPointer .= case dp of
@@ -315,7 +315,7 @@ rotatePointer = do
     DDown -> DLeft
 
 -- Returns the coordinates of the codel from which we should transition next.
-selectCodel :: Block -> Cornelis Position
+selectCodel :: Block -> Piet Position
 selectCodel block = do
   dp <- use directionPointer
   cc <- use codelChooser
@@ -337,7 +337,7 @@ execute cs img =
           codelSize = cs,
           colourMap = imageToColourMap img cs
         }          
-  in void $ runCornelis conf initialState (forever transition)         
+  in void $ runPiet conf initialState (forever transition)         
     
 main = do
   args <- getArgs
@@ -400,7 +400,7 @@ testMap = ColourMap {
   }
 
 runProgram :: Program -> IO ()
-runProgram = void . runCornelis undefined initialState . interpret
+runProgram = void . runPiet undefined initialState . interpret
 
 -- Should print "Hello world" to stdout when interpreted by 'interpret'
 testProgram :: Program

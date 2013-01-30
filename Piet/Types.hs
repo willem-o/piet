@@ -58,7 +58,7 @@ data Instruction r = Push Int r  | Pop r     | Add r    | Subtract r
 
 type Program = Free Instruction ()
 
-type Cornelis = ReaderT ProgramConfig (StateT ProgramState IO)
+type Piet = ReaderT ProgramConfig (StateT ProgramState IO)
 
 initialState = ProgramState {
     _directionPointer = DRight,
@@ -68,8 +68,8 @@ initialState = ProgramState {
     _collisionCount = 0
   }
 
-runCornelis :: ProgramConfig -> ProgramState -> Cornelis a -> IO (a, ProgramState)
-runCornelis conf s c = runStateT (runReaderT c conf) s
+runPiet :: ProgramConfig -> ProgramState -> Piet a -> IO (a, ProgramState)
+runPiet conf s c = runStateT (runReaderT c conf) s
 
 push n = liftF (Push n ())
 pop = liftF (Pop ())
